@@ -1,0 +1,11 @@
+﻿{
+  "SchemaVersion": 1,
+  "Name": "azure-sphere-mqtts",
+  "ComponentId": "f94992d9-f375-44ed-9bdd-bb8d4961b035",
+  "EntryPoint": "/bin/app",
+  "CmdArgs": [],
+  "Capabilities": {
+    "AllowedApplicationConnections": []
+  },
+  "ApplicationType": "Default"
+}
