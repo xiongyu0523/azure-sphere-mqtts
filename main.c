@@ -1,9 +1,14 @@
 ﻿#include <unistd.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <stdio.h>
 #include <errno.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <stdio.h>
 #include <time.h>
+#include <signal.h>
+
+#include "applibs_versions.h"
 #include <applibs/log.h>
 #include <applibs/networking.h>
 #include <applibs/storage.h>
@@ -13,7 +18,9 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <mqtt.h>
+
+#include "eventloop_timer_utilities.h"
+#include "mqtt.h"
 
 #define MQTT_SERVER "broker.emqx.io"
 #if defined(CLIENT_AUTENTICATION)
@@ -24,7 +31,40 @@
 #define PUB_TOPIC  "azsphere/deviceid/time"
 #define SUB_TOPIC  "azsphere/deviceid/led"
 
+/// <summary>
+/// Exit codes for this application. These are used for the
+/// application exit code. They must all be between zero and 255,
+/// where zero is reserved for successful termination.
+/// </summary>
+typedef enum {
+    ExitCode_Success = 0,
+    ExitCode_TermHandler_SigTerm = 1,
+    ExitCode_TimerHandler_Consume = 2,
+    ExitCode_Init_EventLoop = 3,
+    ExitCode_Init_Timer = 4,
+    ExitCode_Main_EventLoopFail = 5,
+    ExitCode_Init_MQTT = 6
+} ExitCode;
+
+static void TerminationHandler(int signalNumber);
+static void PubLocalTime(void);
+static void TimerEventHandler(EventLoopTimer* timer);
+static ExitCode InitHandlers(void);
+static void CloseHandlers(void);
+
+static EventLoop* eventLoop = NULL;
+static EventLoopTimer* tmrHandle = NULL;
 static const char networkInterface[] = "wlan0";
+
+static volatile sig_atomic_t exitCode = ExitCode_Success;
+
+static struct mqtt_client mqttClient;
+static int sockfd = -1;
+WOLFSSL_CTX* ctx = NULL;
+WOLFSSL* ssl = NULL;
+
+uint8_t sendbuf[2048]; /* sendbuf should be large enough to hold multiple whole mqtt messages */
+uint8_t recvbuf[1024]; /* recvbuf should be large enough any whole mqtt message expected to be received */
 
 /**
  * A simple program to that publishes the current time whenever ENTER is pressed.
@@ -42,9 +82,9 @@ void publish_callback(void** unused, struct mqtt_response_publish* published)
 }
 
 /**
- * A simple program to that publishes the current time whenever ENTER is pressed.
+ * mqtt_daemon who is actually deal with networt packets
  */
-void* client_refresher(void* client)
+void* mqtt_daemon(void* client)
 {
     struct timespec ts = { 0, 1000 * 1000 * 100 };
 
@@ -111,21 +151,15 @@ static bool wait_for_async_connection(int sockfd, int timeout)
 
 
 /**
- * A simple program to that publishes the current time whenever ENTER is pressed.
+ * init MQTT conneciton and subscribe desired topics
  */
-int main(int argc, const char* argv[])
+int initMQTT(const char *server, const char *port)
 {
     int ret_status = -1;
-
-    bool isInternetConnected = false;
-    do {
-        isInternetConnected = IsNetworkInterfaceConnectedToInternet();
-    } while (isInternetConnected == false);
 
     /*
         Phase I: Open and connect a non blocking TCP socket to server
     */
-    int sockfd;
     int rt;
 
     /* connect to server */
@@ -141,7 +175,7 @@ int main(int argc, const char* argv[])
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
-    if (getaddrinfo(MQTT_SERVER, MQTT_PORT, &hints, &answer) < 0 || answer == NULL) {
+    if (getaddrinfo(server, port, &hints, &answer) < 0 || answer == NULL) {
         Log_Debug("no addr info for responder\n");
         return -1;
     }
@@ -163,17 +197,15 @@ int main(int argc, const char* argv[])
         return -1;
     }
 
-    if (!wait_for_async_connection(sockfd, 500)) {
+    if (!wait_for_async_connection(sockfd, 10000)) {
         close(sockfd);
         return -1;
     }
+
     /*
         Phase II: Init WOLFSSL and setup TLS connection
     */
 
-    /* declare wolfSSL objects */
-    WOLFSSL_CTX* ctx = NULL;
-    WOLFSSL* ssl = NULL;
     int ret, err;
     char* ca_path = NULL;
 
@@ -197,8 +229,11 @@ int main(int argc, const char* argv[])
     ret = wolfSSL_CTX_load_verify_locations(ctx, ca_path, NULL);
     if (ret != WOLFSSL_SUCCESS) {
         Log_Debug("ERROR: failed to load root certificate\n");
+        free(ca_path);
         goto cleanupLabel;
     }
+
+    free(ca_path);
 
     /* Create a WOLFSSL object */
     if ((ssl = wolfSSL_new(ctx)) == NULL) {
@@ -227,33 +262,54 @@ int main(int argc, const char* argv[])
     /*
         Phase III: Configure a MQTT client to talk to the server
     */
-
-    /* setup a client */
-    struct mqtt_client client;
-    uint8_t sendbuf[2048]; /* sendbuf should be large enough to hold multiple whole mqtt messages */
-    uint8_t recvbuf[1024]; /* recvbuf should be large enough any whole mqtt message expected to be received */
-    mqtt_init(&client, ssl, sendbuf, sizeof(sendbuf), recvbuf, sizeof(recvbuf), publish_callback);
+    mqtt_init(&mqttClient, ssl, sendbuf, sizeof(sendbuf), recvbuf, sizeof(recvbuf), publish_callback);
     /* Create an anonymous session */
     const char* client_id = NULL;
     /* Ensure we have a clean session */
     uint8_t connect_flags = MQTT_CONNECT_CLEAN_SESSION;
     /* Send connection request to the broker. */
-    mqtt_connect(&client, client_id, NULL, NULL, 0, NULL, NULL, connect_flags, 400);
-    if (client.error != MQTT_OK) {
-        Log_Debug("ERROR: %s\n", mqtt_error_str(client.error));
+    mqtt_connect(&mqttClient, client_id, NULL, NULL, 0, NULL, NULL, connect_flags, 400);
+    if (mqttClient.error != MQTT_OK) {
+        Log_Debug("ERROR: %s\n", mqtt_error_str(mqttClient.error));
         goto cleanupLabel;
     }
 
     /* start a thread to refresh the client (handle egress and ingree client traffic) */
     pthread_t client_daemon;
-    if (pthread_create(&client_daemon, NULL, client_refresher, &client)) {
+    if (pthread_create(&client_daemon, NULL, mqtt_daemon, &mqttClient)) {
         Log_Debug("ERROR: Failed to start client daemon.\n");
         goto cleanupLabel;
     }
 
     /* subscribe */
-    mqtt_subscribe(&client, SUB_TOPIC, 0);
+    mqtt_subscribe(&mqttClient, SUB_TOPIC, 0);
 
+    return 0;
+
+cleanupLabel:
+    wolfSSL_free(ssl);      /* Free the wolfSSL object                  */
+    wolfSSL_CTX_free(ctx);  /* Free the wolfSSL context object          */
+    wolfSSL_Cleanup();      /* Cleanup the wolfSSL environment          */
+    close(sockfd);          /* Close the connection to the server       */
+
+    return -1;              /* Return reporting a success               */
+}
+
+/// <summary>
+///     Signal handler for termination requests. This handler must be async-signal-safe.
+/// </summary>
+static void TerminationHandler(int signalNumber)
+{
+    // Don't use Log_Debug here, as it is not guaranteed to be async-signal-safe.
+    exitCode = ExitCode_TermHandler_SigTerm;
+}
+
+
+/// <summary>
+///     The timer event handler.
+/// </summary>
+static void PubLocalTime(void)
+{
     /* get the current time */
     time_t timer;
     time(&timer);
@@ -264,33 +320,98 @@ int main(int argc, const char* argv[])
     /* print a message */
     char application_message[256];
     snprintf(application_message, sizeof(application_message), "The time is %s", timebuf);
-    Log_Debug("%s published : \"%s\"\n", argv[0], application_message);
+    Log_Debug("Published : \"%s\"\n", application_message);
 
     /* publish the time */
-    mqtt_publish(&client, PUB_TOPIC, application_message, strlen(application_message) + 1, MQTT_PUBLISH_QOS_2);
-    if (client.error != MQTT_OK) {
-        Log_Debug("ERROR: %s\n", mqtt_error_str(client.error));
-        mqtt_disconnect(&client);
-        pthread_cancel(client_daemon);
-        goto cleanupLabel;
+    mqtt_publish(&mqttClient, PUB_TOPIC, application_message, strlen(application_message) + 1, MQTT_PUBLISH_QOS_0);
+    if (mqttClient.error != MQTT_OK) {
+        Log_Debug("ERROR: %s\n", mqtt_error_str(mqttClient.error));
+    }
+}
+
+/// <summary>
+///     The timer event handler.
+/// </summary>
+static void TimerEventHandler(EventLoopTimer* timer)
+{
+    if (ConsumeEventLoopTimerEvent(timer) != 0) {
+        exitCode = ExitCode_TimerHandler_Consume;
+        return;
     }
 
-    while (1) {
-        struct timespec ts = { 60, 0 };
-        while ((-1 == nanosleep(&ts, &ts)) && (EINTR == errno));
+    PubLocalTime();
+}
+
+/// <summary>
+///     Set up SIGTERM termination handler and event handlers.
+/// </summary>
+/// <returns>
+///     ExitCode_Success if all resources were allocated successfully; otherwise another
+///     ExitCode value which indicates the specific failure.
+/// </returns>
+static ExitCode InitHandlers(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(struct sigaction));
+    action.sa_handler = TerminationHandler;
+    sigaction(SIGTERM, &action, NULL);
+
+    eventLoop = EventLoop_Create();
+    if (eventLoop == NULL) {
+        Log_Debug("Could not create event loop.\n");
+        return ExitCode_Init_EventLoop;
     }
 
-    mqtt_disconnect(&client);
-    pthread_cancel(client_daemon);
+    static const struct timespec tenSeconds = { .tv_sec = 10, .tv_nsec = 0 };
+    tmrHandle = CreateEventLoopPeriodicTimer(eventLoop, &TimerEventHandler, &tenSeconds);
+    if (tmrHandle == NULL) {
+        return ExitCode_Init_Timer;
+    }
 
-    ret_status = 0;
+    if (initMQTT(MQTT_SERVER, MQTT_PORT) < 0) {
+        return ExitCode_Init_MQTT;
+    }
 
-cleanupLabel:
-    free(ca_path);
-    wolfSSL_free(ssl);      /* Free the wolfSSL object                  */
-    wolfSSL_CTX_free(ctx);  /* Free the wolfSSL context object          */
-    wolfSSL_Cleanup();      /* Cleanup the wolfSSL environment          */
-    close(sockfd);          /* Close the connection to the server       */
+    return ExitCode_Success;
+}
 
-    return ret_status;       /* Return reporting a success              */
+/// <summary>
+///     Clean up the resources previously allocated.
+/// </summary>
+static void CloseHandlers(void)
+{
+    DisposeEventLoopTimer(tmrHandle);
+    EventLoop_Close(eventLoop);
+}
+
+/// <summary>
+///     Main entry point for this sample.
+/// </summary>
+int main(int argc, char* argv[])
+{
+    Log_Debug("MQTT over TLS client demo on Azure Sphere\n");
+    Log_Debug("Minimum required API set is 6 on 20.07 OS\n");
+
+    bool isInternetConnected = false;
+    do {
+        isInternetConnected = IsNetworkInterfaceConnectedToInternet();
+    } while (isInternetConnected == false);
+
+    exitCode = InitHandlers();
+    if (exitCode == ExitCode_Success) {
+        PubLocalTime();
+    }
+
+    // Use event loop to wait for events and trigger handlers, until an error or SIGTERM happens
+    while (exitCode == ExitCode_Success) {
+        EventLoop_Run_Result result = EventLoop_Run(eventLoop, -1, true);
+        // Continue if interrupted by signal, e.g. due to breakpoint being set.
+        if (result == EventLoop_Run_Failed && errno != EINTR) {
+            exitCode = ExitCode_Main_EventLoopFail;
+        }
+    }
+
+    CloseHandlers();
+    Log_Debug("Application exiting.\n");
+    return exitCode;
 }

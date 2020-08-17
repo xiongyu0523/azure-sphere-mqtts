@@ -15,7 +15,7 @@ include_directories(${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/MQTT-C/include)
 add_compile_definitions(MQTT_USE_WOLFSSL)
 
 # Create executable
-add_executable (${PROJECT_NAME} main.c MQTT-C/src/mqtt.c MQTT-C/src/mqtt_pal.c)
+add_executable (${PROJECT_NAME} main.c eventloop_timer_utilities.c MQTT-C/src/mqtt.c MQTT-C/src/mqtt_pal.c)
 target_link_libraries (${PROJECT_NAME} applibs pthread gcc_s c wolfssl)
 
 azsphere_target_add_image_package(${PROJECT_NAME} RESOURCE_FILES "certs/AAACertificateServiceRootCA.pem")
