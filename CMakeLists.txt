@@ -8,8 +8,14 @@ project (azure-sphere-mqtts C)
 azsphere_configure_tools(TOOLS_REVISION "20.07")
 azsphere_configure_api(TARGET_API_SET "6")
 
-# Create executable
-add_executable (${PROJECT_NAME} main.c)
-target_link_libraries (${PROJECT_NAME} applibs pthread gcc_s c)
+# include
+include_directories(${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/MQTT-C/include)
 
-azsphere_target_add_image_package(${PROJECT_NAME})
+# macro
+add_compile_definitions(MQTT_USE_WOLFSSL)
+
+# Create executable
+add_executable (${PROJECT_NAME} main.c MQTT-C/src/mqtt.c MQTT-C/src/mqtt_pal.c)
+target_link_libraries (${PROJECT_NAME} applibs pthread gcc_s c wolfssl)
+
+azsphere_target_add_image_package(${PROJECT_NAME} RESOURCE_FILES "certs/AAACertificateServiceRootCA.pem")
