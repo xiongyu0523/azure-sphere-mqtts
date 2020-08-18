@@ -18,4 +18,4 @@ add_compile_definitions(MQTT_USE_WOLFSSL)
 add_executable (${PROJECT_NAME} main.c eventloop_timer_utilities.c MQTT-C/src/mqtt.c MQTT-C/src/mqtt_pal.c)
 target_link_libraries (${PROJECT_NAME} applibs pthread gcc_s c wolfssl)
 
-azsphere_target_add_image_package(${PROJECT_NAME} RESOURCE_FILES "certs/AAACertificateServiceRootCA.pem")
+azsphere_target_add_image_package(${PROJECT_NAME} RESOURCE_FILES "certs/mosquitto.org.pem")

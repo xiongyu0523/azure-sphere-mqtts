@@ -22,12 +22,6 @@
 #include "eventloop_timer_utilities.h"
 #include "mqtt.h"
 
-#define MQTT_SERVER "broker.emqx.io"
-#if defined(CLIENT_AUTENTICATION)
-#define MQTT_PORT   "8884"
-#else
-#define MQTT_PORT   "8883"
-#endif
 #define PUB_TOPIC  "azsphere/deviceid/time"
 #define SUB_TOPIC  "azsphere/deviceid/led"
 
@@ -153,7 +147,7 @@ static bool wait_for_async_connection(int sockfd, int timeout)
 /**
  * init MQTT conneciton and subscribe desired topics
  */
-int initMQTT(const char *server, const char *port)
+int initMQTT(const char *server, const char *port, const char *ca_relative_path)
 {
     int ret_status = -1;
 
@@ -207,7 +201,7 @@ int initMQTT(const char *server, const char *port)
     */
 
     int ret, err;
-    char* ca_path = NULL;
+    char* ca_abs_path = NULL;
 
     /* Initialize wolfSSL */
     wolfSSL_Init();
@@ -220,20 +214,20 @@ int initMQTT(const char *server, const char *port)
     }
 
     /* Load root CA certificates full path */
-    ca_path = Storage_GetAbsolutePathInImagePackage("certs/AAACertificateServiceRootCA.pem");
-    if (ca_path == NULL) {
+    ca_abs_path = Storage_GetAbsolutePathInImagePackage(ca_relative_path);
+    if (ca_abs_path == NULL) {
         Log_Debug("ERROR: the certificate path could not be resolved\n");
         goto cleanupLabel;
     }
 
-    ret = wolfSSL_CTX_load_verify_locations(ctx, ca_path, NULL);
+    ret = wolfSSL_CTX_load_verify_locations(ctx, ca_abs_path, NULL);
     if (ret != WOLFSSL_SUCCESS) {
         Log_Debug("ERROR: failed to load root certificate\n");
-        free(ca_path);
+        free(ca_abs_path);
         goto cleanupLabel;
     }
 
-    free(ca_path);
+    free(ca_abs_path);
 
     /* Create a WOLFSSL object */
     if ((ssl = wolfSSL_new(ctx)) == NULL) {
@@ -368,10 +362,6 @@ static ExitCode InitHandlers(void)
         return ExitCode_Init_Timer;
     }
 
-    if (initMQTT(MQTT_SERVER, MQTT_PORT) < 0) {
-        return ExitCode_Init_MQTT;
-    }
-
     return ExitCode_Success;
 }
 
@@ -397,9 +387,20 @@ int main(int argc, char* argv[])
         isInternetConnected = IsNetworkInterfaceConnectedToInternet();
     } while (isInternetConnected == false);
 
-    exitCode = InitHandlers();
-    if (exitCode == ExitCode_Success) {
-        PubLocalTime();
+    /*
+        argv[0] = "/mnt/apps/componentId/bin/app"
+        argv[1] = <your-mqtt-broker-fqdn>
+        argv[2] = <your-mqtt-broker-port>
+        argv[3] = <ca certificate relative path>
+    */
+
+    if (initMQTT(argv[1], argv[2], argv[3]) == 0) {
+        exitCode = InitHandlers();
+        if (exitCode == ExitCode_Success) {
+            PubLocalTime();
+        }
+    } else {
+        exitCode = ExitCode_Init_MQTT;
     }
 
     // Use event loop to wait for events and trigger handlers, until an error or SIGTERM happens
