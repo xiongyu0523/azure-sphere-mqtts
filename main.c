@@ -22,8 +22,11 @@
 #include "eventloop_timer_utilities.h"
 #include "mqtt.h"
 
+// Go to https://test.mosquitto.org/ to understand how to setup client certificate
+#define USE_CLIENT_CERTIFICATE
+
 #define PUB_TOPIC  "azsphere/deviceid/time"
-#define SUB_TOPIC  "azsphere/deviceid/led"
+#define SUB_TOPIC  "azsphere/deviceid/command"
 
 /// <summary>
 /// Exit codes for this application. These are used for the
@@ -147,7 +150,7 @@ static bool wait_for_async_connection(int sockfd, int timeout)
 /**
  * init MQTT conneciton and subscribe desired topics
  */
-int initMQTT(const char *server, const char *port, const char *ca_relative_path)
+int initMQTT(const char *server, const char *port)
 {
     int ret_status = -1;
 
@@ -201,7 +204,7 @@ int initMQTT(const char *server, const char *port, const char *ca_relative_path)
     */
 
     int ret, err;
-    char* ca_abs_path = NULL;
+    char* abs_path = NULL;
 
     /* Initialize wolfSSL */
     wolfSSL_Init();
@@ -214,20 +217,55 @@ int initMQTT(const char *server, const char *port, const char *ca_relative_path)
     }
 
     /* Load root CA certificates full path */
-    ca_abs_path = Storage_GetAbsolutePathInImagePackage(ca_relative_path);
-    if (ca_abs_path == NULL) {
-        Log_Debug("ERROR: the certificate path could not be resolved\n");
+    abs_path = Storage_GetAbsolutePathInImagePackage("certs/mosquitto.org.crt");
+    if (abs_path == NULL) {
+        Log_Debug("ERROR: the ca certificate path could not be resolved\n");
         goto cleanupLabel;
     }
 
-    ret = wolfSSL_CTX_load_verify_locations(ctx, ca_abs_path, NULL);
+    ret = wolfSSL_CTX_load_verify_locations(ctx, abs_path, NULL);
     if (ret != WOLFSSL_SUCCESS) {
-        Log_Debug("ERROR: failed to load root certificate\n");
-        free(ca_abs_path);
+        Log_Debug("ERROR: failed to load ca certificate\n");
+        free(abs_path);
         goto cleanupLabel;
     }
 
-    free(ca_abs_path);
+    free(abs_path);
+
+#if defined(CLIENT_CERTIFICATE)
+
+    abs_path = Storage_GetAbsolutePathInImagePackage("certs/client.key");
+    if (abs_path == NULL) {
+        Log_Debug("ERROR: the private key path could not be resolved\n");
+        goto cleanupLabel;
+    }
+
+    ret = wolfSSL_CTX_use_PrivateKey_file(ctx, abs_path, WOLFSSL_FILETYPE_PEM);
+    if (ret != WOLFSSL_SUCCESS) {
+        Log_Debug("ERROR: failed to private key certificate\n");
+        free(abs_path);
+        goto cleanupLabel;
+    }
+
+    free(abs_path);
+
+
+    abs_path = Storage_GetAbsolutePathInImagePackage("certs/client.crt");
+    if (abs_path == NULL) {
+        Log_Debug("ERROR: the client certificate path could not be resolved\n");
+        goto cleanupLabel;
+    }
+
+    ret = wolfSSL_CTX_use_certificate_file(ctx, abs_path, WOLFSSL_FILETYPE_PEM);
+    if (ret != WOLFSSL_SUCCESS) {
+        Log_Debug("ERROR: failed to client certificate\n");
+        free(abs_path);
+        goto cleanupLabel;
+    }
+
+    free(abs_path);
+
+#endif
 
     /* Create a WOLFSSL object */
     if ((ssl = wolfSSL_new(ctx)) == NULL) {
@@ -388,13 +426,15 @@ int main(int argc, char* argv[])
     } while (isInternetConnected == false);
 
     /*
-        argv[0] = "/mnt/apps/componentId/bin/app"
-        argv[1] = <your-mqtt-broker-fqdn>
-        argv[2] = <your-mqtt-broker-port>
-        argv[3] = <ca certificate relative path>
+        E.g. In app_manifest.json file, set program arugments:
+
+        "CmdArgs": [ "test.mosquitto.org", "8884" ]
+
+        argv[1] = "test.mosquitto.org"
+        argv[2] = "8884"
     */
 
-    if (initMQTT(argv[1], argv[2], argv[3]) == 0) {
+    if (initMQTT(argv[1], argv[2]) == 0) {
         exitCode = InitHandlers();
         if (exitCode == ExitCode_Success) {
             PubLocalTime();

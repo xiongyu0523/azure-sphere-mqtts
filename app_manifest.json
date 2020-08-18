@@ -3,7 +3,7 @@
   "Name": "azure-sphere-mqtts",
   "ComponentId": "f94992d9-f375-44ed-9bdd-bb8d4961b035",
   "EntryPoint": "/bin/app",
-  "CmdArgs": [ "test.mosquitto.org", "8883", "certs/mosquitto.org.pem" ],
+  "CmdArgs": [ "test.mosquitto.org", "8884" ],
   "Capabilities": {
     "AllowedConnections": [ "test.mosquitto.org" ],
   },
