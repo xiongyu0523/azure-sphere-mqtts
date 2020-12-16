@@ -3,6 +3,8 @@ This sample project shows how to port a 3rd party mqtt library [MQTT-C](https://
 
 The primary test server used in this sample project is test.mosquitto.org, a public available MQTT broker support both server and client authentication on port 8884. 
 
+This sample also support use Azure Sphere DAA certificate to authenticate with a 3rd party MQTT borker. But customer need make sure their server trust sphere tenant CA and can approve device connection by looking at this common name field.
+
 ## To build and run the sample
 
 ### Prep your device and environment
@@ -46,5 +48,4 @@ Follow the instructions in this [page](https://test.mosquitto.org/ssl/) to creat
 
 ### Note
 
-1. Currently WolfSSL API can only load client certificate and private key from external for client authentication. While DAA certificate issued by AS3 is not used in this case. (Only supported by libcurl at this moment)
-2. test.mosquitto.org is not stable and sometime you may see connection is failed. You can try broker.emqx.io instead. Only mosquitto server support client authentication. 
+1. test.mosquitto.org is not stable and sometime you may see connection is failed. You can try broker.emqx.io instead. Only mosquitto server support client authentication. 

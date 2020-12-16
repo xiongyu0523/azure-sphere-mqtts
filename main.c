@@ -12,6 +12,7 @@
 #include <applibs/log.h>
 #include <applibs/networking.h>
 #include <applibs/storage.h>
+#include <tlsutils/deviceauth.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -22,8 +23,14 @@
 #include "eventloop_timer_utilities.h"
 #include "mqtt.h"
 
+
 // Go to https://test.mosquitto.org/ to understand how to setup client certificate
-#define USE_CLIENT_CERTIFICATE
+#define USE_EXTERNAL_CERT       1
+// Use DAA cert requries user have a MQTT server trust Sphere tenant CA and has logic built-in to approve device connection base on its common name (device ID)
+// In app_manifest.json, DeviceAuthentication must be set to the tenant ID that your device is claimed to
+#define USE_DAA_CERT            0
+
+#define DEMO_MODE                           USE_EXTERNAL_CERT
 
 #define PUB_TOPIC  "azsphere/deviceid/time"
 #define SUB_TOPIC  "azsphere/deviceid/command"
@@ -232,7 +239,7 @@ int initMQTT(const char *server, const char *port)
 
     free(abs_path);
 
-#if defined(CLIENT_CERTIFICATE)
+#if (DEMO_MODE == USE_EXTERNAL_CERT)
 
     abs_path = Storage_GetAbsolutePathInImagePackage("certs/client.key");
     if (abs_path == NULL) {
@@ -265,6 +272,16 @@ int initMQTT(const char *server, const char *port)
 
     free(abs_path);
 
+#elif (DEMO_MODE == USE_DAA_CERT)
+
+    ret = wolfSSL_CTX_use_certificate_chain_file(ctx, DeviceAuth_GetCertificatePath());
+    if (ret != WOLFSSL_SUCCESS) {
+        Log_Debug("ERROR: failed to private key certificate\n");
+        goto cleanupLabel;
+    }
+
+#else
+#error "You must define DEMO_MODE"
 #endif
 
     /* Create a WOLFSSL object */
@@ -418,7 +435,7 @@ static void CloseHandlers(void)
 int main(int argc, char* argv[])
 {
     Log_Debug("MQTT over TLS client demo on Azure Sphere\n");
-    Log_Debug("Minimum required API set is 6 on 20.07 OS\n");
+    Log_Debug("Minimum required API set is 7 on 20.10 OS\n");
 
     bool isInternetConnected = false;
     do {
